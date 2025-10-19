@@ -1,56 +1,46 @@
 """
-Telegram Bot — Base Chain New Token Watcher
+Telegram Bot — Verified Base Tokens Watcher
 
 Description:
-A lightweight Python script that scans new blocks on the Base blockchain (EVM-compatible) and detects
-newly deployed contracts. When a contract responds like an ERC-20 token (has name/symbol/decimals/totalSupply),
-it sends a Telegram message to a chat with the token details.
+This Python script monitors the Base blockchain for *newly verified token contracts* (as listed by the official BaseScan API).
+When a new verified token appears, it sends a notification to a Telegram chat.
 
 Requirements:
 - Python 3.9+
-- pip install web3 requests
+- pip install requests
 
-Configuration (set environment variables or edit the constants below):
-- RPC_URL: an HTTP(S) RPC endpoint for the Base chain (e.g. from Alchemy/Infura/your node)
-- TELEGRAM_BOT_TOKEN: your bot token (from @BotFather)
-- TELEGRAM_CHAT_ID: chat id or channel id where to send notifications
+Configuration:
+- BASESCAN_API_KEY: your BaseScan API key (https://basescan.org/myapikey)
+- TELEGRAM_BOT_TOKEN: your bot token from @BotFather
+- TELEGRAM_CHAT_ID: your Telegram chat/channel ID
 
 Usage:
-> python telegram_base_token_watcher.py
+> python telegram_verified_token_watcher.py
 
-
+Notes:
+- Uses the BaseScan API to fetch verified token contracts.
+- Checks periodically (default: every 60 seconds) for new verified tokens.
+- Avoids spam from unverified deployments by focusing only on verified contracts.
+"""
 
 import os
 import time
-import json
 import requests
-from web3 import Web3
-from web3.exceptions import BadFunctionCallOutput, ContractLogicError
 
-# ---------- Configuration (edit or set as env vars) ----------
-RPC_URL = os.getenv('RPC_URL', 'https://your-base-rpc.example')
+# ---------- Configuration ----------
+BASESCAN_API_KEY = os.getenv('BASESCAN_API_KEY', '')
 TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN', '')
 TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID', '')
-POLL_INTERVAL = float(os.getenv('POLL_INTERVAL', '4'))  # seconds between checks
-START_BLOCK = os.getenv('START_BLOCK')  # optional: start block number (int), else uses latest - 1
+POLL_INTERVAL = float(os.getenv('POLL_INTERVAL', '60'))  # seconds between checks
 
-# Explorer URL template (replace if you prefer another explorer)
-EXPLORER_BASE_URL = 'https://base.blockscan.com/address/'
-TX_EXPLORER_URL = 'https://base.blockscan.com/tx/'
+BASESCAN_API_URL = 'https://api.basescan.org/api'
+EXPLORER_BASE_URL = 'https://basescan.org/token/'
 
-# Minimal ERC-20 ABI subset we will call (only view functions)
-ERC20_ABI = [
-    {"constant":True,"inputs":[],"name":"name","outputs":[{"name":"","type":"string"}],"type":"function"},
-    {"constant":True,"inputs":[],"name":"symbol","outputs":[{"name":"","type":"string"}],"type":"function"},
-    {"constant":True,"inputs":[],"name":"decimals","outputs":[{"name":"","type":"uint8"}],"type":"function"},
-    {"constant":True,"inputs":[],"name":"totalSupply","outputs":[{"name":"","type":"uint256"}],"type":"function"}
-]
-
-# ---------- Helper functions ----------
+# ---------- Helpers ----------
 
 def send_telegram_message(text: str):
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
-        print("Telegram credentials not set. Message would be:\n", text)
+        print("Telegram not configured. Message would be:\n", text)
         return
     url = f'https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage'
     payload = {
@@ -60,135 +50,57 @@ def send_telegram_message(text: str):
         'disable_web_page_preview': True
     }
     try:
-        r = requests.post(url, data=payload, timeout=10)
-        r.raise_for_status()
+        requests.post(url, data=payload, timeout=10)
     except Exception as e:
-        print('Failed to send Telegram message:', e)
+        print('Telegram send failed:', e)
 
 
-def is_erc20_like(w3: Web3, contract_address: str):
-    """Try to read common ERC-20 fields. Return dict with found data or None."""
-    c = w3.eth.contract(address=contract_address, abi=ERC20_ABI)
-    info = {"address": contract_address}
+def fetch_verified_tokens(start_block=None, end_block=None):
+    params = {
+        'module': 'token',
+        'action': 'tokenlist',
+        'apikey': BASESCAN_API_KEY
+    }
+    if start_block and end_block:
+        params.update({'startblock': start_block, 'endblock': end_block})
     try:
-        # name and symbol can be bytes32 in some contracts; try both
-        try:
-            name = c.functions.name().call()
-        except (BadFunctionCallOutput, ContractLogicError, ValueError):
-            name = None
-        try:
-            symbol = c.functions.symbol().call()
-        except (BadFunctionCallOutput, ContractLogicError, ValueError):
-            symbol = None
-        try:
-            decimals = c.functions.decimals().call()
-        except (BadFunctionCallOutput, ContractLogicError, ValueError):
-            decimals = None
-        try:
-            total_supply = c.functions.totalSupply().call()
-        except (BadFunctionCallOutput, ContractLogicError, ValueError):
-            total_supply = None
-
-        # If at least symbol or name or total_supply present, we consider it token-like
-        if any([name, symbol, decimals is not None, total_supply is not None]):
-            info.update({
-                'name': name,
-                'symbol': symbol,
-                'decimals': decimals,
-                'total_supply': total_supply
-            })
-            return info
+        r = requests.get(BASESCAN_API_URL, params=params, timeout=15)
+        data = r.json()
+        if data.get('status') == '1':
+            return data.get('result', [])
+        return []
     except Exception as e:
-        # any unexpected error -> treat as not token-like
-        print(f'Error probing contract {contract_address}:', e)
-    return None
+        print('Error fetching verified tokens:', e)
+        return []
 
 
-# ---------- Main watcher ----------
+# ---------- Main ----------
 
 def main():
-    w3 = Web3(Web3.HTTPProvider(RPC_URL, request_kwargs={'timeout': 60}))
-    if not w3.isConnected():
-        print('ERROR: could not connect to RPC:', RPC_URL)
-        return
-    print('Connected to RPC')
-
-    # determine starting block
-    if START_BLOCK:
-        try:
-            current_block = int(START_BLOCK)
-        except ValueError:
-            current_block = w3.eth.block_number - 1
-    else:
-        current_block = w3.eth.block_number - 1
-
-    print('Starting from block', current_block)
-    seen_contracts = set()
+    print('Starting Verified Token Watcher on Base...')
+    seen_addresses = set()
 
     while True:
-        try:
-            latest = w3.eth.block_number
-            if latest <= current_block:
-                time.sleep(POLL_INTERVAL)
-                continue
+        tokens = fetch_verified_tokens()
+        new_tokens = [t for t in tokens if t['contractAddress'].lower() not in seen_addresses]
 
-            for b in range(current_block + 1, latest + 1):
-                block = w3.eth.get_block(b, full_transactions=True)
-                print(f'Checking block {b} with {len(block.transactions)} txs')
-                for tx in block.transactions:
-                    # contract creation txs have `to` == None
-                    if tx.to is None:
-                        # get receipt to fetch contractAddress
-                        try:
-                            receipt = w3.eth.get_transaction_receipt(tx.hash)
-                            contract_addr = receipt.contractAddress
-                            if not contract_addr:
-                                continue
-                            if contract_addr.lower() in seen_contracts:
-                                continue
+        for token in new_tokens:
+            seen_addresses.add(token['contractAddress'].lower())
+            name = token.get('tokenName', '—')
+            symbol = token.get('tokenSymbol', '—')
+            supply = token.get('totalSupply', '—')
+            address = token.get('contractAddress')
 
-                            # probe the contract for ERC20 methods
-                            info = is_erc20_like(w3, contract_addr)
-                            if info:
-                                seen_contracts.add(contract_addr.lower())
-                                name = info.get('name') or '—'
-                                symbol = info.get('symbol') or '—'
-                                decimals = info.get('decimals')
-                                total_supply = info.get('total_supply')
-                                if decimals is not None and total_supply is not None:
-                                    try:
-                                        human_supply = int(total_supply) / (10 ** int(decimals))
-                                    except Exception:
-                                        human_supply = total_supply
-                                else:
-                                    human_supply = total_supply
+            msg = (
+                f"✅ New verified token on Base\n"
+                f"<b>{name}</b> ({symbol})\n"
+                f"Address: <a href=\"{EXPLORER_BASE_URL}{address}\">{address}</a>\n"
+                f"Total Supply: {supply}\n"
+            )
+            print('Verified token found:', name, symbol)
+            send_telegram_message(msg)
 
-                                msg = (
-                                    f"New token detected on Base:\n"
-                                    f"Name: <b>{name}</b>\n"
-                                    f"Symbol: <b>{symbol}</b>\n"
-                                    f"Address: <a href=\"{EXPLORER_BASE_URL}{contract_addr}\">{contract_addr}</a>\n"
-                                    f"Tx: <a href=\"{TX_EXPLORER_URL}{tx.hash.hex()}\">{tx.hash.hex()}</a>\n"
-                                    f"Block: {b}\n"
-                                )
-                                if decimals is not None:
-                                    msg += f"Decimals: {decimals}\n"
-                                if human_supply is not None:
-                                    msg += f"Total supply: {human_supply}\n"
-
-                                print('Token found:', contract_addr, name, symbol)
-                                send_telegram_message(msg)
-
-                        except Exception as e:
-                            print('Failed processing contract creation tx:', e)
-                # end block tx loop
-            # update current block
-            current_block = latest
-        except Exception as e:
-            print('Watcher error (sleeping):', e)
-            time.sleep(5)
-        finally:
-            time.sleep(POLL_INTERVAL)
+        time.sleep(POLL_INTERVAL)
 
 
 if __name__ == '__main__':

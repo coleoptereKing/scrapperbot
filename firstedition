@@ -18,13 +18,7 @@ Configuration (set environment variables or edit the constants below):
 Usage:
 > python telegram_base_token_watcher.py
 
-Notes & limitations:
-- This is a polling watcher (polls newest block every `POLL_INTERVAL` seconds). For production, consider
-  websocket provider and / or running as a service with logging and retries.
-- Some contracts implement ERC-20 differently; this script attempts "best-effort" detection by calling
-  common ERC-20 view methods and ignoring failures.
-- Replace EXPLORER_BASE_URL with your preferred Base explorer if you want clickable links.
-"""
+
 
 import os
 import time

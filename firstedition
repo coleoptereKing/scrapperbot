@@ -1,42 +1,12 @@
-"""
-Telegram Bot — Verified Base Tokens Watcher
 
-Description:
-This Python script monitors the Base blockchain for *newly verified token contracts* (as listed by the official BaseScan API).
-When a new verified token appears, it sends a notification to a Telegram chat.
-
-Requirements:
-- Python 3.9+
-- pip install requests
-
-Configuration:
-- BASESCAN_API_KEY: your BaseScan API key (https://basescan.org/myapikey)
-- TELEGRAM_BOT_TOKEN: your bot token from @BotFather
-- TELEGRAM_CHAT_ID: your Telegram chat/channel ID
-
-Usage:
-> python telegram_verified_token_watcher.py
-
-Notes:
-- Uses the BaseScan API to fetch verified token contracts.
-- Checks periodically (default: every 60 seconds) for new verified tokens.
-- Avoids spam from unverified deployments by focusing only on verified contracts.
-"""
 
 import os
 import time
 import requests
 
-# ---------- Configuration ----------
-BASESCAN_API_KEY = os.getenv('BASESCAN_API_KEY', '')
-TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN', '')
-TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID', '')
-POLL_INTERVAL = float(os.getenv('POLL_INTERVAL', '60'))  # seconds between checks
 
-BASESCAN_API_URL = 'https://api.basescan.org/api'
-EXPLORER_BASE_URL = 'https://basescan.org/token/'
 
-# ---------- Helpers ----------
+
 
 def send_telegram_message(text: str):
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
